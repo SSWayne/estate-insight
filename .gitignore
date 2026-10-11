@@ -1,0 +1,10 @@
+# 套件與打包產物（GitHub Actions 會自行安裝與打包）
+node_modules/
+dist/
+public/vendor/
+
+# 本機設定與暫存
+.claude/settings.local.json
+*.log
+.DS_Store
+Thumbs.db
