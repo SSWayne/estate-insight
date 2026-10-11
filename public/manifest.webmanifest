@@ -1,0 +1,18 @@
+{
+  "name": "Estate Insight 雙北購屋分析",
+  "short_name": "雙北購屋",
+  "description": "台北市與新北市自住購屋分析：物件管理、房價統計、物件比較、房貸試算。資料只存在這支手機。",
+  "lang": "zh-Hant-TW",
+  "id": "./",
+  "start_url": "./#/dashboard",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f5f2",
+  "theme_color": "#132238",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
