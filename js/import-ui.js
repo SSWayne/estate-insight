@@ -7,8 +7,9 @@ import { loadSettings, saveSettings } from './settings.js';
 import { pruneCompare } from './compare-store.js';
 import {
   toCSV, csvTemplate, parseCSV, csvToRecords, buildBackup, parseBackup, analyzeImport, summarize,
-  selectedProperties, selectedDeletions, ID_POLICIES, MAX_IMPORT_BYTES, dateStamp,
+  selectedProperties, selectedDeletions, ID_POLICIES, MAX_IMPORT_BYTES, MAX_BACKUP_BYTES, dateStamp,
 } from './import-export.js';
+import { encodeBackupImage, groupImagesByProperty } from './images.js';
 import { isTouchDevice } from './pwa.js';
 import {
   icon, toast, confirmDialog, downloadFile, readTextFile, pickFile, sectionHead, optionList, withFocus,
@@ -35,14 +36,25 @@ function markBackedUp(at) {
   window.dispatchEvent(new CustomEvent('backup:done'));
 }
 
+/** 讀出全部圖片並編碼成備份格式。 */
+async function backupImages() {
+  const [metas, files] = await Promise.all([service.listAllImages(), service.listAllImageData()]);
+  const dataById = new Map(files.map((f) => [f.id, f.data]));
+  return metas.filter((m) => dataById.has(m.id)).map((m) => encodeBackupImage(m, dataById.get(m.id)));
+}
+
 /**
- * 匯出完整備份（物件＋刪除紀錄＋設定）。
+ * 匯出完整備份（物件＋刪除紀錄＋設定，預設也包含圖片）。
  * 手機上若支援分享，直接叫出分享選單（可傳到 LINE、存到雲端硬碟）；否則下載檔案。
+ * @param {{ includeImages?: boolean }} [opts]
  * @returns {Promise<boolean>} 是否完成（使用者取消分享時為 false）
  */
-export async function exportBackup() {
-  const [list, deleted] = await Promise.all([service.listProperties(), service.listTombstones()]);
-  const backup = buildBackup(list, loadSettings(), new Date().toISOString(), deleted);
+export async function exportBackup({ includeImages = true } = {}) {
+  const [list, deleted, images] = await Promise.all([
+    service.listProperties(), service.listTombstones(), includeImages ? backupImages() : undefined,
+  ]);
+  const backup = buildBackup(list, loadSettings(), new Date().toISOString(), deleted, images);
+  const imageNote = images ? `、${images.length} 張圖片` : '（不含圖片）';
   const name = `estate-insight-備份-${dateStamp()}.json`;
   const json = JSON.stringify(backup, null, 2);
 
@@ -52,7 +64,7 @@ export async function exportBackup() {
       try {
         await navigator.share({ files: [file], title: '雙北購屋 資料備份', text: `${list.length} 筆物件的備份，用「雙北購屋」的「匯入 JSON 備份」開啟` });
         markBackedUp(backup.exportedAt);
-        toast(`已分享備份：${list.length} 筆物件`, 'success');
+        toast(`已分享備份：${list.length} 筆物件${imageNote}`, 'success');
         return true;
       } catch (err) {
         if (err.name === 'AbortError') return false; // 使用者取消分享
@@ -62,7 +74,7 @@ export async function exportBackup() {
   }
   downloadFile(name, json, 'application/json');
   markBackedUp(backup.exportedAt);
-  toast(`已匯出完整備份：${list.length} 筆物件＋系統設定`, 'success');
+  toast(`已匯出完整備份：${list.length} 筆物件${imageNote}＋系統設定`, 'success');
   return true;
 }
 
@@ -74,7 +86,8 @@ export function downloadTemplate() {
 async function loadImportFile(kind) {
   const file = await pickFile(kind === 'csv' ? '.csv,.tsv,.txt,text/csv' : '.json,application/json');
   if (!file) return null;
-  if (file.size > MAX_IMPORT_BYTES) { toast('檔案超過 10 MB，請確認是否選錯檔案', 'error'); return null; }
+  const limit = kind === 'csv' ? MAX_IMPORT_BYTES : MAX_BACKUP_BYTES;
+  if (file.size > limit) { toast(`檔案超過 ${limit / 1024 / 1024} MB，請確認是否選錯檔案`, 'error'); return null; }
 
   const { text, encoding } = await readTextFile(file);
   const base = { kind, fileName: file.name, encoding, replace: false, idPolicy: 'newer', restoreSettings: false };
@@ -93,7 +106,7 @@ async function loadImportFile(kind) {
   }
   const parsed = parseBackup(text);
   if (parsed.error) { toast(`無法匯入：${parsed.error}`, 'error'); return null; }
-  return { ...base, records: parsed.records, deleted: parsed.deleted, settings: parsed.settings, meta: parsed.meta, restoreSettings: false, ignoredColumns: [], missingRequired: [] };
+  return { ...base, records: parsed.records, deleted: parsed.deleted, images: parsed.images, settings: parsed.settings, meta: parsed.meta, restoreSettings: false, ignoredColumns: [], missingRequired: [] };
 }
 
 /* ---------- 匯入：介面 ---------- */
@@ -127,7 +140,11 @@ export function mountImportExport(container, { onImported } = {}) {
     const action = btn.dataset.io;
     try {
       if (action === 'export-csv') await exportCSV();
-      else if (action === 'export-json') { await exportBackup(); draw(); }
+      else if (action === 'export-json') {
+        const includeImages = container.querySelector('#exportImages')?.checked ?? true;
+        await exportBackup({ includeImages });
+        draw();
+      }
       else if (action === 'template') downloadTemplate();
       else if (action === 'import-csv' || action === 'import-json') {
         const loaded = await loadImportFile(action === 'import-csv' ? 'csv' : 'json');
@@ -184,7 +201,13 @@ export function mountImportExport(container, { onImported } = {}) {
       });
       if (!ok) return;
     }
-    const n = await service.importProperties(props, { replace: session.replace, remove, tombstones });
+    // 備份含圖片時，匯入的物件改用備份中的圖片（備份中沒有圖片的物件＝清空）；不含圖片時保留本機圖片
+    let images = {};
+    if (session.images) {
+      const grouped = groupImagesByProperty(session.images);
+      images = Object.fromEntries(props.map((p) => [p.id, grouped[p.id] || []]));
+    }
+    const n = await service.importProperties(props, { replace: session.replace, remove, tombstones, images });
     if (withSettings) saveSettings(session.settings);
     if (session.replace) pruneCompare(props.map((p) => p.id));
 
@@ -225,8 +248,9 @@ function homeHtml() {
     <h2 class="card-title" style="margin:20px 0 12px">匯出</h2>
     <div class="grid-2">
       ${tile('archive', `${isTouchDevice() ? '分享' : '匯出'} JSON 完整備份`, `包含所有物件、刪除紀錄與系統設定，可用於和家人交換資料、還原或換手機。${last ? `上次備份：${fmtDate(last)}` : '尚未備份過。'}`, 'export-json', true)}
-      ${tile('file-down', '匯出 CSV', '匯出所有物件，可直接用 Excel 開啟；另附單價、室內坪數等計算欄供參考。', 'export-csv')}
+      ${tile('file-down', '匯出 CSV', '匯出所有物件，可直接用 Excel 開啟；另附單價、室內坪數等計算欄供參考。CSV 不含圖片。', 'export-csv')}
     </div>
+    <label class="check mt-2"><input type="checkbox" id="exportImages" checked> JSON 備份包含物件圖片（檔案會比較大）</label>
     <h2 class="card-title" style="margin:24px 0 12px">匯入</h2>
     <div class="grid-2">
       ${tile('archive-restore', '匯入 JSON 備份', '匯入家人傳來的資料，或從自己的備份還原。預設合併，也可選擇取代全部。', 'import-json')}
@@ -266,6 +290,9 @@ function previewHtml(session, existingCount) {
 
       ${session.missingRequired.length ? `<div class="callout callout-warning mt-4">${icon('triangle-alert')}<div>檔案缺少必要欄位：<strong>${session.missingRequired.map(escapeHtml).join('、')}</strong>，相關資料列將無法通過檢查。</div></div>` : ''}
       ${session.ignoredColumns.length ? `<p class="small muted mt-2">以下欄位無法辨識，已忽略：${session.ignoredColumns.map(escapeHtml).join('、')}</p>` : ''}
+      ${isJson ? `<p class="small muted mt-2">${icon('image')} ${session.images
+    ? `此備份含 ${session.images.length} 張圖片，勾選匯入的物件會改用備份中的圖片。${session.meta.invalidImages ? `另有 ${session.meta.invalidImages} 張格式不正確，已略過。` : ''}`
+    : '此備份不含圖片，現有物件的圖片會保留。'}</p>` : ''}
 
       <div class="import-options mt-4">
         <label class="field">
