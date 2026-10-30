@@ -6,7 +6,10 @@
  */
 import {
   listProperties as getAllProperties, getProperty, createProperty, updateProperty, ValidationError, NotFoundError,
+  listImages, listCovers,
 } from './property-service.js';
+import { mountImageEditor, galleryHtml, openGallery } from './image-ui.js';
+import { kindLabel } from './images.js';
 import { bindPropertyActions, confirmAndDelete } from './property-actions.js';
 import {
   FIELDS, FIELD_GROUPS, FIELD_MAP, fieldOptions, createEmptyProperty,
@@ -54,6 +57,7 @@ function handleCompareToggle(id) {
 
 export async function renderList(view, ctx) {
   let all = await getAllProperties();
+  let covers = await listCovers();
   const settings = loadSettings();
   let scores = scoreAll(all, settings);
   const f = listState.filters;
@@ -90,11 +94,18 @@ export async function renderList(view, ctx) {
       ? rankProperties(filtered, scores)
       : sortProperties(filtered, listState.sort, sortValue(scores));
     view.querySelector('#listSummary').innerHTML = filterSummaryHtml(all.length, shown.length, f);
-    view.querySelector('#listBody').innerHTML = listTableHtml(shown, all.length, scores, new Set(getCompareIds()));
+    view.querySelector('#listBody').innerHTML = listTableHtml(shown, all.length, scores, new Set(getCompareIds()), covers);
     refreshIcons();
   };
 
-  view.querySelector('#listBody').addEventListener('click', (e) => {
+  view.querySelector('#listBody').addEventListener('click', async (e) => {
+    const pic = e.target.closest('[data-gallery]');
+    if (pic) {
+      // 清單只有縮圖資訊；看大圖時才讀這筆物件的全部圖片，從點選的那張開始
+      const imgs = await listImages(pic.dataset.gallery);
+      openGallery(imgs, Math.max(0, imgs.findIndex((img) => img.id === pic.dataset.start)));
+      return;
+    }
     const btn = e.target.closest('[data-compare]');
     if (!btn) return;
     withFocus(() => { handleCompareToggle(btn.dataset.compare); update(); });
@@ -110,13 +121,32 @@ export async function renderList(view, ctx) {
   const unbind = bindFilterBar(view, f, update);
   const unbindActions = bindPropertyActions(view.querySelector('#listBody'), {
     getById: (id) => all.find((p) => p.id === id),
-    onChange: async () => { all = await getAllProperties(); scores = scoreAll(all, settings); update(); },
+    onChange: async () => {
+      [all, covers] = await Promise.all([getAllProperties(), listCovers()]);
+      scores = scoreAll(all, settings);
+      update();
+    },
   });
   update();
   return () => { clearTimeout(t); unbind(); unbindActions(); };
 }
 
-function listTableHtml(list, total, scores, compareIds) {
+/** 清單中的封面縮圖與格局圖按鈕（沒有圖片時顯示佔位）。 */
+function listMediaHtml(p, entry) {
+  const id = escapeHtml(p.id);
+  if (!entry) return `<span class="list-thumb is-empty" aria-hidden="true">${icon('image')}</span>`;
+  const { cover, floorplan, count } = entry;
+  return `
+    <button type="button" class="list-thumb" data-gallery="${id}" data-start="${escapeHtml(cover.id)}"
+      aria-label="檢視「${escapeHtml(p.title)}」的圖片，共 ${count} 張">
+      <img src="${escapeHtml(cover.thumb)}" alt="" loading="lazy">
+      ${count > 1 ? `<span class="list-thumb-count" aria-hidden="true">${count}</span>` : ''}
+    </button>
+    ${floorplan ? `<button type="button" class="btn btn-ghost btn-sm list-floorplan" data-gallery="${id}" data-start="${escapeHtml(floorplan.id)}"
+      aria-label="檢視「${escapeHtml(p.title)}」的${kindLabel('floorplan')}">${icon('layout-panel-left')}${kindLabel('floorplan')}</button>` : ''}`;
+}
+
+function listTableHtml(list, total, scores, compareIds, covers) {
   if (total === 0) {
     return emptyState({
       iconName: 'house',
@@ -155,8 +185,13 @@ function listTableHtml(list, total, scores, compareIds) {
               <tr>
                 <td>${favButton(p)}</td>
                 <td>
-                  <a href="#/detail?id=${encodeURIComponent(p.id)}" class="truncate" style="display:block;max-width:260px;font-weight:500;color:var(--color-text)">${escapeHtml(p.title)}</a>
-                  <span class="small muted">${escapeHtml(p.address || p.buildingType || '')}</span>
+                  <div class="list-item">
+                    <div class="list-media">${listMediaHtml(p, covers.get(p.id))}</div>
+                    <div style="min-width:0">
+                      <a href="#/detail?id=${encodeURIComponent(p.id)}" class="truncate" style="display:block;max-width:260px;font-weight:500;color:var(--color-text)">${escapeHtml(p.title)}</a>
+                      <span class="small muted">${escapeHtml(p.address || p.buildingType || '')}</span>
+                    </div>
+                  </div>
                 </td>
                 <td>${cityDot(p.city)}${escapeHtml(p.district)}</td>
                 <td class="num">${fmtWan(p.totalPrice)}</td>
@@ -203,6 +238,8 @@ export async function renderDetail(view, ctx) {
 
   const d = computeDerived(p);
   const s = scoreAll([p], loadSettings(), await getAllProperties()).get(p.id);
+  const images = await listImages(p.id);
+  const editHref = `#/edit?id=${encodeURIComponent(p.id)}`;
   const inCompare = isInCompare(p.id);
   const show = (key) => displayValue(FIELD_MAP[key], p[key]);
   const dl = (keys) => `<dl class="dl">${keys.map((k) => `<div><dt>${FIELD_MAP[k].label}</dt><dd>${show(k)}</dd></div>`).join('')}</dl>`;
@@ -238,6 +275,10 @@ export async function renderDetail(view, ctx) {
           <a class="btn btn-ghost" href="#/listings" style="margin-left:auto">${icon('arrow-left')}返回清單</a>
         </div>
       </section>
+      <section class="card" id="detailGallery">
+        ${sectionHead('照片與格局圖', images.length ? `共 ${images.length} 張，點選可看大圖` : '', images.length ? `<a class="btn btn-ghost btn-sm" href="${editHref}">${icon('image-plus')}管理圖片</a>` : '')}
+        ${galleryHtml(images, editHref)}
+      </section>
       <section class="card">
         ${sectionHead('評分與理由', '依系統設定的必要條件與權重計算；價格與室內空間為與所有物件的相對比較', `<a class="btn btn-ghost btn-sm" href="#/settings">${icon('sliders-horizontal')}調整權重</a>`)}
         <div class="score-layout">
@@ -267,6 +308,11 @@ export async function renderDetail(view, ctx) {
         </section>
       </div>
     </div>`;
+
+  view.querySelector('#detailGallery').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-gallery-index]');
+    if (btn) openGallery(images, Number(btn.dataset.galleryIndex));
+  });
 
   view.querySelector('[data-compare]').addEventListener('click', async () => {
     if (handleCompareToggle(p.id).ok) await withFocus(async () => { await renderDetail(view, ctx); refreshIcons(); });
@@ -313,6 +359,7 @@ export async function renderForm(view, ctx, mode) {
     }
   }
   const data = existing ? { ...existing } : createEmptyProperty();
+  const savedImages = existing ? await listImages(existing.id) : [];
 
   view.innerHTML = `
     <form class="page form-layout" id="propForm" novalidate>
@@ -324,6 +371,7 @@ export async function renderForm(view, ctx, mode) {
               ${FIELDS.filter((f) => f.group === g.id).map((f) => fieldHtml(f, data)).join('')}
             </div>
           </section>`).join('')}
+        <div id="imageEditor" class="form-section"></div>
       </div>
       <aside class="form-aside">
         <section class="card">
@@ -348,6 +396,7 @@ export async function renderForm(view, ctx, mode) {
 
   const form = view.querySelector('#propForm');
   const touched = new Set();
+  const images = mountImageEditor(view.querySelector('#imageEditor'), savedImages);
 
   const collect = () => {
     const raw = {};
@@ -419,12 +468,18 @@ export async function renderForm(view, ctx, mode) {
     return JSON.stringify(rest);
   };
   const initial = snapshot();
+  const initialImages = images.signature();
   let saving = false;
-  ctx.setLeaveGuard(() => !saving && snapshot() !== initial);
+  ctx.setLeaveGuard(() => !saving && (snapshot() !== initial || images.signature() !== initialImages || images.isBusy()));
 
   const reportErrors = (errors) => {
     FIELDS.forEach((f) => touched.add(f.key));
     showErrors(errors, false);
+    if (errors.images) {
+      toast(errors.images, 'error');
+      view.querySelector('#imageEditor').scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
     const first = FIELDS.find((f) => errors[f.key]);
     if (first) {
       const el = form.elements[first.key];
@@ -437,6 +492,7 @@ export async function renderForm(view, ctx, mode) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (saving) return;
+    if (images.isBusy()) { toast('圖片處理中，請稍候再儲存', 'warning'); return; }
     const action = e.submitter?.value || 'save';
     const p = collect();
     const { valid, errors } = validateProperty(p);
@@ -460,7 +516,8 @@ export async function renderForm(view, ctx, mode) {
     buttons.forEach((b) => { b.disabled = true; });
     try {
       const raw = Object.fromEntries(FIELDS.map((f) => [f.key, p[f.key]]));
-      const saved = mode === 'edit' ? await updateProperty(existing.id, raw) : await createProperty(raw);
+      const imgs = images.getImages();
+      const saved = mode === 'edit' ? await updateProperty(existing.id, raw, imgs) : await createProperty(raw, imgs);
       toast(mode === 'edit' ? `已儲存「${saved.title}」的變更` : `已新增「${saved.title}」`, 'success');
       if (action === 'next') {
         await renderForm(view, ctx, 'create');

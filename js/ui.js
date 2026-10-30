@@ -11,7 +11,7 @@ export function icon(name, extraClass = '') {
 
 /** 用來在重繪後找回「同一個」控制項的屬性（依優先順序）。 */
 const FOCUS_KEYS = ['data-action', 'data-compare', 'data-pick', 'data-sort', 'data-select', 'data-select-all', 'data-row',
-  'data-mode', 'data-basis', 'data-io', 'data-tab', 'data-bulk', 'data-filter', 'data-filter-reset', 'data-remove', 'data-rate'];
+  'data-mode', 'data-basis', 'data-io', 'data-tab', 'data-bulk', 'data-filter', 'data-filter-reset', 'data-remove', 'data-rate', 'data-img-action', 'data-img-pick'];
 
 function focusSelector(el) {
   if (!el || el === document.body) return null;

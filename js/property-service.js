@@ -42,13 +42,17 @@ export const getImageData = (id) => db.getImageData(id);
 export const listAllImages = () => db.getAllImages();
 export const listAllImageData = () => db.getAllImageData();
 
-/** 每筆物件的封面（第一張圖片）與張數：Map<propertyId, { cover, count }>。 */
+/**
+ * 每筆物件的封面（第一張圖片）、第一張格局圖與張數：Map<propertyId, { cover, floorplan, count }>。
+ * floorplan 沒有格局圖時為 null。
+ */
 export async function listCovers() {
   const map = new Map();
   for (const img of await db.getAllImages()) {
-    const entry = map.get(img.propertyId);
+    let entry = map.get(img.propertyId);
     if (entry) entry.count += 1;
-    else map.set(img.propertyId, { cover: img, count: 1 });
+    else map.set(img.propertyId, (entry = { cover: img, floorplan: null, count: 1 }));
+    if (!entry.floorplan && img.kind === 'floorplan') entry.floorplan = img;
   }
   return map;
 }
