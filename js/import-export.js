@@ -8,9 +8,12 @@
 import { FIELDS, FIELD_MAP, ALL_KEYS, normalizeProperty, validateProperty, computeDerived, findSimilarProperties } from './model.js';
 import { DISTRICTS } from './constants.js';
 import { APP_NAME } from './constants.js';
+import { decodeBackupImage } from './images.js';
 
 export const BACKUP_SCHEMA_VERSION = 1;
 export const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+/** JSON 備份可能含圖片，上限放寬。 */
+export const MAX_BACKUP_BYTES = 300 * 1024 * 1024;
 
 /* =====================================================================
    CSV 欄位
@@ -166,16 +169,19 @@ export function csvToRecords(rows) {
  * @param {object} settings
  * @param {string} [exportedAt]
  * @param {{ id: string, deletedAt: string }[]} [deleted] 刪除紀錄，讓對方匯入時一併刪除
+ * @param {object[]} [images] 已編碼的圖片（images.js 的 encodeBackupImage）；不含圖片的備份不放這個欄位，
+ *   匯入時才能分辨「備份沒帶圖片（保留本機圖片）」與「物件沒有圖片」
  */
-export function buildBackup(properties, settings, exportedAt = new Date().toISOString(), deleted = []) {
+export function buildBackup(properties, settings, exportedAt = new Date().toISOString(), deleted = [], images) {
   return {
     app: APP_NAME,
     schemaVersion: BACKUP_SCHEMA_VERSION,
     exportedAt,
-    counts: { properties: properties.length, deleted: deleted.length },
+    counts: { properties: properties.length, deleted: deleted.length, ...(images ? { images: images.length } : {}) },
     properties,
     deleted,
     settings,
+    ...(images ? { images } : {}),
   };
 }
 
@@ -201,8 +207,8 @@ export function parseBackup(text) {
   } catch {
     return { records: [], settings: null, meta: {}, error: '不是有效的 JSON 檔案' };
   }
-  const fail = (error) => ({ records: [], deleted: [], settings: null, meta: {}, error });
-  if (Array.isArray(data)) return { records: data.filter((r) => r && typeof r === 'object').map((r) => fixLocation({ ...r })), deleted: [], settings: null, meta: { format: 'array' } };
+  const fail = (error) => ({ records: [], deleted: [], images: null, settings: null, meta: {}, error });
+  if (Array.isArray(data)) return { records: data.filter((r) => r && typeof r === 'object').map((r) => fixLocation({ ...r })), deleted: [], images: null, settings: null, meta: { format: 'array' } };
   if (!data || typeof data !== 'object') return fail('JSON 內容格式不正確');
   if (data.app && data.app !== APP_NAME) return fail(`這不是 ${APP_NAME} 的備份檔（來源：${data.app}）`);
   if (data.schemaVersion > BACKUP_SCHEMA_VERSION) return fail(`備份檔版本（v${data.schemaVersion}）比系統新，請先更新系統`);
@@ -210,11 +216,19 @@ export function parseBackup(text) {
 
   const records = data.properties.filter((r) => r && typeof r === 'object').map((r) => fixLocation({ ...r }));
   const settings = data.settings && typeof data.settings === 'object' && !Array.isArray(data.settings) ? data.settings : null;
+  // images：null＝備份不含圖片（匯入時保留本機圖片）；陣列＝含圖片（格式不正確的略過並計數）
+  const images = Array.isArray(data.images) ? data.images.map(decodeBackupImage).filter(Boolean) : null;
   return {
     records,
     deleted: cleanTombstones(data.deleted),
+    images,
     settings,
-    meta: { exportedAt: data.exportedAt || null, schemaVersion: data.schemaVersion ?? null, format: 'backup' },
+    meta: {
+      exportedAt: data.exportedAt || null,
+      schemaVersion: data.schemaVersion ?? null,
+      format: 'backup',
+      invalidImages: images ? data.images.length - images.length : 0,
+    },
   };
 }
 
