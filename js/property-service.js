@@ -6,6 +6,7 @@
 import * as db from './db.js';
 import { normalizeProperty, validateProperty } from './model.js';
 import { VIEWING_STATUSES } from './constants.js';
+import { validateImages } from './images.js';
 
 export class ValidationError extends Error {
   constructor(errors, warnings = []) {
@@ -33,24 +34,57 @@ function notify(type, ids) {
 export const listProperties = () => db.getAllProperties();
 export const getProperty = (id) => db.getProperty(id);
 
-/** 新增物件。raw 可為表單原始值；回傳正規化後實際寫入的資料。 */
-export async function createProperty(raw) {
+/** 物件的圖片資訊（含縮圖，依順序）。 */
+export const listImages = (propertyId) => db.getImagesByProperty(propertyId);
+/** 圖片原檔 { id, data }（看大圖用）。 */
+export const getImageData = (id) => db.getImageData(id);
+/** 全部圖片資訊與原檔（備份用）。 */
+export const listAllImages = () => db.getAllImages();
+export const listAllImageData = () => db.getAllImageData();
+
+/** 每筆物件的封面（第一張圖片）與張數：Map<propertyId, { cover, count }>。 */
+export async function listCovers() {
+  const map = new Map();
+  for (const img of await db.getAllImages()) {
+    const entry = map.get(img.propertyId);
+    if (entry) entry.count += 1;
+    else map.set(img.propertyId, { cover: img, count: 1 });
+  }
+  return map;
+}
+
+function checkImages(images) {
+  if (images === undefined) return;
+  const msg = validateImages(images);
+  if (msg) throw new ValidationError({ images: msg });
+}
+
+/**
+ * 新增物件。raw 可為表單原始值；回傳正規化後實際寫入的資料。
+ * @param {object[]} [images] 物件圖片（新圖片要有 data），與物件在同一個 transaction 寫入
+ */
+export async function createProperty(raw, images) {
   const p = normalizeProperty({ ...raw, id: undefined, createdAt: undefined });
   const { valid, errors, warnings } = validateProperty(p);
   if (!valid) throw new ValidationError(errors, warnings);
-  await db.addProperty(p);
+  checkImages(images);
+  await db.addProperty(p, images);
   notify('create', [p.id]);
   return p;
 }
 
-/** 更新物件（保留 id 與 createdAt，更新 updatedAt）。 */
-export async function updateProperty(id, raw) {
+/**
+ * 更新物件（保留 id 與 createdAt，更新 updatedAt）。
+ * @param {object[]} [images] 這筆物件完整的圖片清單（依顯示順序）；未提供則不動圖片
+ */
+export async function updateProperty(id, raw, images) {
   const existing = await db.getProperty(id);
   if (!existing) throw new NotFoundError(id);
   const p = normalizeProperty(raw, existing);
   const { valid, errors, warnings } = validateProperty(p);
   if (!valid) throw new ValidationError(errors, warnings);
-  await db.putProperty(p);
+  checkImages(images);
+  await db.putProperty(p, images);
   notify('update', [id]);
   return p;
 }
@@ -90,15 +124,18 @@ export const listTombstones = () => db.getAllTombstones();
  * 批次匯入已驗證的物件（由 import-export.js 的 analyzeImport 產生）。
  * 寫入前再驗證一次，任何一筆不合格就整批不寫入。
  * @param {object[]} properties 正規化後的物件
- * @param {{ replace?: boolean, remove?: { id: string, deletedAt: string }[], tombstones?: { id: string, deletedAt: string }[] }} options
- *   replace：以這批資料取代全部；remove：要刪除的物件（對方已刪除）；tombstones：要合併進來的刪除紀錄
+ * @param {{ replace?: boolean, remove?: { id: string, deletedAt: string }[], tombstones?: { id: string, deletedAt: string }[],
+ *   images?: Record<string, object[]> }} options
+ *   replace：以這批資料取代全部；remove：要刪除的物件（對方已刪除）；tombstones：要合併進來的刪除紀錄；
+ *   images：以物件 id 為鍵，該物件的圖片改為備份中的清單（沒列到的物件保留本機圖片）
  */
-export async function importProperties(properties, { replace = false, remove = [], tombstones = [] } = {}) {
+export async function importProperties(properties, { replace = false, remove = [], tombstones = [], images = {} } = {}) {
   for (const p of properties) {
     const { valid, errors } = validateProperty(p);
     if (!valid) throw new ValidationError(errors);
   }
-  await db.applyImport({ put: properties, remove, tombstones, replace });
+  Object.values(images).forEach(checkImages);
+  await db.applyImport({ put: properties, remove, tombstones, replace, images });
   notify('import', properties.map((p) => p.id));
   if (remove.length) notify('delete', remove.map((t) => t.id));
   return properties.length;
