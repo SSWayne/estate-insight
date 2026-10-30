@@ -61,8 +61,10 @@ export const CHART_COLORS = Object.freeze({
 export const CITY_COLOR_INDEX = Object.freeze({ 台北市: 0, 新北市: 1 });
 
 export const DB_NAME = 'estate-insight';
-export const DB_VERSION = 2; // v2：新增 tombstones（刪除紀錄）
+export const DB_VERSION = 3; // v2：新增 tombstones（刪除紀錄）；v3：新增 images、imageData（物件圖片）
 export const STORE_PROPERTIES = 'properties';
 export const STORE_TOMBSTONES = 'tombstones';
+export const STORE_IMAGES = 'images'; // 圖片資訊＋縮圖（清單、表單用，讀取成本低）
+export const STORE_IMAGE_DATA = 'imageData'; // 圖片原檔（看大圖時才讀取）
 
 export const SETTINGS_KEY = 'estate-insight:settings';
