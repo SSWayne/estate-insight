@@ -80,6 +80,20 @@ test('新增物件時一併寫入圖片；縮圖與原檔分開存，清單只�
   assert.equal(covers.get(p.id).count, 2);
 });
 
+test('清單封面資訊：標出第一張格局圖（不一定是封面）；沒有格局圖時為 null', async () => {
+  const photo = newImage();
+  const plan1 = newImage({ kind: 'floorplan' });
+  const plan2 = newImage({ kind: 'floorplan' });
+  const withPlan = await service.createProperty(sample({ title: '有格局圖' }), [photo, plan1, plan2]);
+  const noPlan = await service.createProperty(sample({ title: '只有照片' }), [newImage()]);
+  const bare = await service.createProperty(sample({ title: '沒有圖片' }));
+  const covers = await service.listCovers();
+  assert.equal(covers.get(withPlan.id).cover.id, photo.id);
+  assert.equal(covers.get(withPlan.id).floorplan.id, plan1.id);
+  assert.equal(covers.get(noPlan.id).floorplan, null);
+  assert.equal(covers.has(bare.id), false, '沒有圖片的物件不在清單中');
+});
+
 test('編輯時調整順序、刪除圖片：被刪的原檔一起清掉，保留的原檔不需重傳', async () => {
   const [a, b, c] = [newImage(), newImage(), newImage()];
   const p = await service.createProperty(sample(), [a, b, c]);
